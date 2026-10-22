@@ -2383,6 +2383,7 @@ def run(
             external_plan, topic, available, planner_requested_sources, depth,
             honor_plan_sources=True,
         )
+        _ensure_unplanned_lanes_in_host_plan(plan, available)
         plan_source = "external"
     else:
         _check_research(config)
@@ -3763,6 +3764,53 @@ def _ensure_devto_in_plan(plan: schema.QueryPlan, available: list[str]) -> None:
     if "devto" not in plan.source_weights:
         plan.source_weights["devto"] = 1.0
         plan.source_weights = planner._normalize_weights(plan.source_weights)
+
+
+# Sources that are available only because the user installed their CLI or opted
+# in (INCLUDE_SOURCES, --search, a targeting flag). A host plan that names none
+# of them in any subquery almost always means the host planner never knew to
+# list them, not that it chose to skip them, so they ride the primary subquery.
+# Paid lanes with their own host decision step (amazon, meta_ads) stay out;
+# EXCLUDE_SOURCES and --search already filter ``available``.
+HOST_PLAN_BACKFILL_SOURCES = (
+    "digg",
+    "arxiv",
+    "techmeme",
+    "bluesky",
+    "truthsocial",
+    "stocktwits",
+    "linkedin",
+    "dripstack",
+    "devto",
+    "telegram",
+    "trustpilot",
+)
+
+
+def _ensure_unplanned_lanes_in_host_plan(
+    plan: schema.QueryPlan,
+    available: list[str],
+) -> None:
+    if not plan.subqueries:
+        return
+    planned = {source for subquery in plan.subqueries for source in subquery.sources}
+    missing = [
+        source for source in HOST_PLAN_BACKFILL_SOURCES
+        if source in available and source not in planned
+    ]
+    if not missing:
+        return
+    plan.subqueries[0].sources.extend(missing)
+    for source in missing:
+        plan.source_weights.setdefault(source, 1.0)
+    plan.source_weights = planner._normalize_weights(plan.source_weights)
+    log.source_log(
+        "Planner",
+        "Added installed/opted-in sources absent from every --plan subquery to "
+        f"{plan.subqueries[0].label}: {', '.join(missing)} "
+        "(set EXCLUDE_SOURCES to skip them).",
+        tty_only=False,
+    )
 
 
 def _external_plan_names_source(external_plan: Any, source: str) -> bool:

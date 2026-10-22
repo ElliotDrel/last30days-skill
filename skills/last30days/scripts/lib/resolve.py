@@ -12,7 +12,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 from typing import Optional
 
-from . import categories, dates, grounding, log
+from . import categories, dates, grounding, http, log
 
 MAX_SUBS = 10
 
@@ -178,6 +178,88 @@ def _extract_official_domain(topic: str, items: list[dict]) -> str:
                 if re.sub(r"[^a-z0-9]", "", registrable) == want:
                     return bare
     return ""
+
+
+_HREF = re.compile(r"""href\s*=\s*["']([^"']+)["']""", re.IGNORECASE)
+# Profile links only: x.com/{handle} with nothing after the handle but a slash,
+# query or fragment. /status/, /intent/ and /share links name someone else's
+# post or a share widget, never the site's own account.
+_X_PROFILE_LINK = re.compile(
+    r"^(?:https?:)?//(?:www\.|mobile\.)?(?:x|twitter)\.com/([A-Za-z0-9_]{1,15})/?(?:[?#].*)?$",
+    re.IGNORECASE,
+)
+_GITHUB_OWNER_LINK = re.compile(
+    r"^(?:https?:)?//(?:www\.)?github\.com/([A-Za-z0-9](?:[A-Za-z0-9-]{0,38}))(?:[/?#].*)?$",
+    re.IGNORECASE,
+)
+_X_NON_ACCOUNTS = {
+    "twitter", "x", "search", "hashtag", "intent", "share", "i", "home",
+    "explore", "settings", "login", "signup", "tos", "privacy", "messages",
+    "notifications", "compose",
+}
+_GITHUB_NON_OWNERS = {
+    "topics", "explore", "settings", "orgs", "search", "features", "about",
+    "pricing", "enterprise", "login", "join", "sponsors", "marketplace",
+    "apps", "collections", "trending", "site", "security", "customer-stories",
+}
+
+
+def _official_site_url(site: str) -> str:
+    """Normalize a domain or URL to the site's homepage URL, or ""."""
+    text = (site or "").strip()
+    if not text:
+        return ""
+    host = re.sub(r"^[a-z][a-z0-9+.-]*://", "", text, flags=re.IGNORECASE)
+    host = re.split(r"[/?#]", host, maxsplit=1)[0].strip().lower()
+    if not re.fullmatch(r"[a-z0-9-]+(\.[a-z0-9-]+)+(:\d+)?", host):
+        return ""
+    return f"https://{host}/"
+
+
+def _most_linked(names: list[str]) -> str:
+    """The most-linked name, ties broken by first appearance."""
+    counts: dict[str, int] = {}
+    for name in names:
+        counts[name] = counts.get(name, 0) + 1
+    return max(counts, key=lambda name: (counts[name], -names.index(name))) if counts else ""
+
+
+def official_site_socials(site: str, *, timeout: int = 10) -> dict[str, str]:
+    """Read a brand's own X and GitHub accounts from its homepage links.
+
+    A company's homepage links its own accounts (usually in the header or
+    footer), so this is the most reliable first-party source for the handle,
+    and it needs no search key. Only ``href`` targets count: a handle quoted
+    in page copy may be anyone's. Returns ``{"x_handle": ..., "github_user":
+    ...}`` with "" for any account the page does not link, and both empty
+    when the page cannot be fetched.
+    """
+    result = {"x_handle": "", "github_user": ""}
+    url = _official_site_url(site)
+    if not url:
+        return result
+    html = http.get_text(url, timeout=timeout, retries=1, accept="text/html")
+    if not html:
+        _log(f"Official site {url} could not be fetched")
+        return result
+    x_handles: list[str] = []
+    github_owners: list[str] = []
+    for href in _HREF.findall(html):
+        href = href.strip()
+        x_match = _X_PROFILE_LINK.match(href)
+        if x_match and x_match.group(1).lower() not in _X_NON_ACCOUNTS:
+            x_handles.append(x_match.group(1))
+            continue
+        gh_match = _GITHUB_OWNER_LINK.match(href)
+        if gh_match and gh_match.group(1).lower() not in _GITHUB_NON_OWNERS:
+            github_owners.append(gh_match.group(1))
+    result["x_handle"] = _most_linked(x_handles)
+    result["github_user"] = _most_linked(github_owners)
+    _log(
+        f"Official site {url}: x_handle={result['x_handle']!r}, "
+        f"github_user={result['github_user']!r}"
+    )
+    return result
 
 
 def _extract_github_repos(items: list[dict]) -> list[str]:

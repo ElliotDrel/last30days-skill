@@ -494,6 +494,12 @@ Runs that may skip the plan stay unaffected: `--mock`, `--hiring-signals`, `--au
 
 Outside a detected agent host nothing changes. The engine still plans internally and prints the LAW 7 reminder whenever it ends on the deterministic fallback, including when the internal planner fails (for example an HTTP 402 from a provider with no credits).
 
+### What the engine adds to and checks on a host plan
+
+A `--plan`'s per-subquery `sources` stay final, with one exception: an installed or opted-in source (digg, arxiv, techmeme, bluesky, truthsocial, stocktwits, linkedin, dripstack, devto, telegram, trustpilot) that is available but named in no subquery is added to the first subquery, and the engine logs a `[Planner]` line naming it. Host planners used to leave these out, so an installed `digg-pp-cli` was never searched on hosted runs. To keep one out deliberately, set `EXCLUDE_SOURCES` or restrict the run with `--search`.
+
+On an agent-hosted run whose plan searches `x` for an entity-shaped topic (a short name such as `Jev` or `Peter Steinberger`, not a question or a theme), the engine exits 2 unless the command carries `--x-handle` or `--no-x-handle="<reason>"`. `--official-site=<domain>` lets the engine read the handle from the site's homepage links, with no API key; a handle you pass with `--x-handle` wins over the homepage. Quick runs, comparison runs, topics that already contain an `@handle`, and runs whose plan does not search X are exempt.
+
 ### Provider endpoint overrides
 
 Point a provider at a gateway (LiteLLM, an enterprise proxy, a self-hosted OpenAI-compatible server) without a code change:
