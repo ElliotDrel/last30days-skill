@@ -88,5 +88,12 @@ def test_namesake_does_not_expand_x_targets():
 
 
 def test_unscoped_plan_is_compatible():
+    legacy_payload = asdict(plan())
+    del legacy_payload['person_identity_anchors']
+    planner.validate_external_plan(legacy_payload)
+    legacy_plan = schema.query_plan_from_dict(legacy_payload)
+    assert legacy_plan.person_identity_anchors == []
     evidence = item('Alex Rowan resigns as Alloy Works secretary')
     assert entity_extract.matches_person_identity(evidence, [])
+    assert rerank.rerank_candidates(topic='Alex Rowan', plan=legacy_plan,
+        candidates=[candidate(evidence)], provider=None, model=None, shortlist_size=10)
