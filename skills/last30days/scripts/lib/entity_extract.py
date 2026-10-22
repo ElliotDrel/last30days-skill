@@ -175,8 +175,21 @@ def matches_person_identity(item, anchors: list[str], primary_handle: str | None
     if (item.source == "x" and primary_handle and item.author
             and item.author.lstrip("@").lower() == primary_handle.lstrip("@").lower()):
         return True
-    text = " ".join((item.title or "", item.body or "", item.snippet or ""))
-    normalized = " ".join(re.findall(r"\w+", text.casefold()))
+    parts = [item.title or "", item.body or "", item.snippet or ""]
+    metadata = item.metadata or {}
+    transcript = metadata.get("transcript_snippet")
+    if isinstance(transcript, str):
+        parts.append(transcript)
+    for field in ("transcript_highlights", "comment_insights"):
+        parts.extend(value for value in metadata.get(field) or [] if isinstance(value, str))
+    for comment in metadata.get("top_comments") or []:
+        if isinstance(comment, str):
+            parts.append(comment)
+        elif isinstance(comment, dict):
+            text = comment.get("excerpt") or comment.get("text")
+            if isinstance(text, str):
+                parts.append(text)
+    normalized = " ".join(re.findall(r"\w+", " ".join(parts).casefold()))
     return any(
         re.search(r"(?<!\w)" + re.escape(" ".join(re.findall(r"\w+", anchor.casefold())))
                   + r"(?!\w)", normalized)

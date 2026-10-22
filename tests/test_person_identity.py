@@ -1,8 +1,8 @@
-from dataclasses import asdict
+from dataclasses import asdict, replace
 import threading
 from unittest.mock import Mock, patch
 import pytest
-from lib import entity_extract, pipeline, planner, rerank, schema
+from lib import entity_extract, fusion, pipeline, planner, rerank, schema
 
 
 def plan():
@@ -97,3 +97,53 @@ def test_unscoped_plan_is_compatible():
     assert entity_extract.matches_person_identity(evidence, [])
     assert rerank.rerank_candidates(topic='Alex Rowan', plan=legacy_plan,
         candidates=[candidate(evidence)], provider=None, model=None, shortlist_size=10)
+
+
+@pytest.mark.parametrize('thin_first', [False, True])
+def test_fusion_keeps_qualified_article_without_unqualified_submission(thin_first):
+    qualified = item('Alex Rowan at Northstar Labs', source='grounding')
+    thin = item('Alex Rowan update', source='hackernews')
+    thin.engagement_score = 100000
+    qualified.engagement_score = 10
+    streams = [(('primary', 'grounding'), [qualified]), (('primary', 'hackernews'), [thin])]
+    if thin_first:
+        streams.reverse()
+    scoped_plan = plan()
+    scoped_plan.subqueries[0] = replace(scoped_plan.subqueries[0], sources=['grounding', 'hackernews'])
+    candidates = fusion.weighted_rrf(dict(streams), scoped_plan, pool_limit=10)
+    assert len(candidates) == 1
+    assert candidates[0].source_items == [qualified]
+    assert candidates[0].source == 'grounding'
+    assert candidates[0].engagement == 10
+    assert rerank.rerank_candidates(topic='Alex Rowan', plan=scoped_plan,
+        candidates=candidates, provider=None, model=None, shortlist_size=10)
+
+
+@pytest.mark.parametrize('metadata', [
+    {'transcript_snippet': 'Alex Rowan at Northstar Labs'},
+    {'transcript_highlights': ['Alex Rowan at Northstar Labs']},
+    {'top_comments': [{'excerpt': 'Alex Rowan at Northstar Labs'}]},
+    {'top_comments': [{'text': 'Alex Rowan at Northstar Labs'}]},
+    {'top_comments': ['Alex Rowan at Northstar Labs']},
+    {'comment_insights': ['Alex Rowan at Northstar Labs']},
+])
+def test_readable_metadata_identity_anchors_are_retained(metadata):
+    evidence = item('Alex Rowan interview', source='youtube')
+    evidence.metadata = metadata
+    assert entity_extract.matches_person_identity(evidence, plan().person_identity_anchors)
+    assert rerank.rerank_candidates(topic='Alex Rowan', plan=plan(),
+        candidates=[candidate(evidence)], provider=None, model=None, shortlist_size=10)
+
+
+def test_nonreadable_metadata_cannot_supply_identity():
+    evidence = item('Alex Rowan interview', source='youtube')
+    evidence.metadata = {'thumbnail_url': 'Northstar Labs', 'transcript_highlights': [123]}
+    assert not entity_extract.matches_person_identity(evidence, plan().person_identity_anchors)
+
+
+@pytest.mark.parametrize('primary_handle,expected', [(None, False), ('alex_founder', True), ('partner', False)])
+def test_fusion_only_exempts_explicit_x_subject(primary_handle, expected):
+    evidence = item('Shipping today', author='alex_founder')
+    candidates = fusion.weighted_rrf({('primary', 'x'): [evidence]}, plan(), pool_limit=10,
+        primary_handle=primary_handle, first_party_handles={'alex_founder', 'partner'})
+    assert bool(candidates) is expected

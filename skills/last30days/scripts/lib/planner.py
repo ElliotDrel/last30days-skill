@@ -343,6 +343,7 @@ def build_drill_plan(
         freshness_mode=report.query_plan.freshness_mode,
         cluster_mode=report.query_plan.cluster_mode,
         raw_topic=report.topic,
+        person_identity_anchors=list(report.query_plan.person_identity_anchors),
         subqueries=subqueries,
         source_weights={
             source: report.query_plan.source_weights.get(source, 1.0)

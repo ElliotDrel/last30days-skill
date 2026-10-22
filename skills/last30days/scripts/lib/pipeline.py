@@ -3051,6 +3051,7 @@ def run(
         range_from=from_date,
         range_to=to_date,
         first_party_handles=resolved_handles,
+        primary_handle=x_handle,
     )
     private_candidates = [
         candidate
