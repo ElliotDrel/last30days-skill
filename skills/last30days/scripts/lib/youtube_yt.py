@@ -943,10 +943,12 @@ def _ytdlp_request_langs() -> str:
     reach ``es-orig`` before the translated ``en`` can fail. The partial-VTT
     salvage keeps the ``-orig`` file when a plain track then fails. yt-dlp
     skips languages a video does not have, so non-dubbed videos are
-    unaffected.
+    unaffected. A code configured as ``-orig`` stays original-only.
     """
-    bases = [code.removesuffix("-orig") for code in _ytdlp_sub_langs().split(",")]
-    return ",".join(dict.fromkeys([f"{code}-orig" for code in bases] + bases))
+    codes = _ytdlp_sub_langs().split(",")
+    originals = [code if code.endswith("-orig") else f"{code}-orig" for code in codes]
+    plain = [code for code in codes if not code.endswith("-orig")]
+    return ",".join(dict.fromkeys(originals + plain))
 
 
 def _transcript_fast_timeout() -> float:
@@ -1145,26 +1147,33 @@ def _should_try_sc_transcript(status: Optional[Dict[str, Any]]) -> bool:
 class _RescueBudget:
     """Thread-safe cap on successful SC transcript rescues in one batch.
 
-    A call reserves a slot before it is made and gives it back if it returns
-    no transcript, so parallel workers never overshoot the cap and a miss does
-    not cost a later video its rescue.
+    A call reserves a slot before it is made and settles it afterwards: a
+    transcript fills the slot, an empty result frees it. While every open slot
+    is held by a call still in flight, other workers wait for one to settle
+    instead of skipping their video, so a miss never leaves the target short.
     """
 
     def __init__(self, limit: int):
         self._limit = limit
-        self._used = 0
-        self._lock = threading.Lock()
+        self._filled = 0
+        self._pending = 0
+        self._cond = threading.Condition()
 
-    def try_reserve(self) -> bool:
-        with self._lock:
-            if self._used >= self._limit:
+    def reserve(self) -> bool:
+        with self._cond:
+            while self._filled < self._limit and self._filled + self._pending >= self._limit:
+                self._cond.wait()
+            if self._filled >= self._limit:
                 return False
-            self._used += 1
+            self._pending += 1
             return True
 
-    def release(self) -> None:
-        with self._lock:
-            self._used -= 1
+    def settle(self, filled: bool) -> None:
+        with self._cond:
+            self._pending -= 1
+            if filled:
+                self._filled += 1
+            self._cond.notify_all()
 
 
 def fetch_transcript(
@@ -1195,7 +1204,7 @@ def fetch_transcript(
             video proven to have no captions. None preserves keyless behavior.
         rescue_budget: Optional cap shared across a batch. A rescue reserves a
             slot before the paid call and keeps it only when it returns a
-            transcript; with no slot left the video stays without one.
+            transcript; once the cap is filled the video stays without one.
 
     Returns:
         Plaintext transcript string, or None if no captions available.
@@ -1240,11 +1249,14 @@ def fetch_transcript(
     if (
         token
         and _should_try_sc_transcript(status)
-        and (rescue_budget is None or rescue_budget.try_reserve())
+        and (rescue_budget is None or rescue_budget.reserve())
     ):
-        sc_transcript = _sc_fetch_transcript(video_id, token)
-        if not sc_transcript and rescue_budget is not None:
-            rescue_budget.release()
+        sc_transcript = None
+        try:
+            sc_transcript = _sc_fetch_transcript(video_id, token)
+        finally:
+            if rescue_budget is not None:
+                rescue_budget.settle(bool(sc_transcript))
         if sc_transcript:
             # The keyless cascade (yt-dlp / direct HTTP) already logged its
             # failure above. Without this line that failure is the last thing

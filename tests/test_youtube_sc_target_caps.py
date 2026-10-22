@@ -1,5 +1,6 @@
 """Follow-up to #1319: paid YouTube transcript spend stops at the target (#1314, #1315)."""
 
+import time
 from unittest import mock
 
 import pytest
@@ -66,6 +67,8 @@ def test_search_and_transcribe_caps_rescues_at_the_depth_target():
         ("en,es,pt", "en-orig,es-orig,pt-orig,en,es,pt"),
         ("fr,en-orig,en", "fr-orig,en-orig,fr,en"),
         ("en", "en-orig,en"),
+        ("en-orig", "en-orig"),
+        ("en-orig,es", "en-orig,es-orig,es"),
     ],
 )
 def test_every_orig_track_is_requested_before_any_plain_code(
@@ -125,3 +128,28 @@ def test_an_empty_rescue_gives_its_slot_back():
         )
 
     assert sum(1 for value in results.values() if value) == 2
+
+
+def test_slots_held_by_slow_empty_rescues_go_to_waiting_videos():
+    """Two slow paid misses hold both default-depth slots; later videos wait for them, then fill the target."""
+    def _ytdlp(video_id, temp_dir, status=None, fast_fail=False):
+        if video_id not in ("v0", "v1"):
+            time.sleep(0.05)
+        return _ytdlp_rate_limited(video_id, temp_dir, status=status)
+
+    def _sc(vid, token):
+        if vid in ("v0", "v1"):
+            time.sleep(0.3)
+            return ""
+        return f"text {vid}"
+
+    with mock.patch.object(youtube_yt, "is_ytdlp_installed", return_value=True), \
+         mock.patch.object(youtube_yt, "_ytdlp_ssh_host", return_value=None), \
+         mock.patch.object(youtube_yt, "_fetch_transcript_ytdlp", side_effect=_ytdlp), \
+         mock.patch.object(youtube_yt, "_sc_fetch_transcript", side_effect=_sc) as sc_mock:
+        results = youtube_yt.fetch_transcripts_parallel(
+            [f"v{i}" for i in range(6)], token="sc-key", max_sc_rescues=2, max_workers=5,
+        )
+
+    assert sum(1 for value in results.values() if value) == 2
+    assert sc_mock.call_count == 4
