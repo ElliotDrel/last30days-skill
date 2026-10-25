@@ -69,6 +69,18 @@ def test_plan_roundtrip_and_validation():
             planner.validate_external_plan(raw)
 
 
+@pytest.mark.parametrize('malformed,expected', [
+    (None, []), ('Northstar Labs', []), (['Northstar Labs', '', 123], ['Northstar Labs']),
+])
+def test_internal_planner_keeps_plan_when_anchors_are_malformed(malformed, expected):
+    raw = asdict(plan())
+    raw['person_identity_anchors'] = malformed
+    sanitized = planner._sanitize_plan(raw, topic='Alex Rowan', depth='default',
+        available_sources=['x'], requested_sources=['x'])
+    assert sanitized.subqueries
+    assert sanitized.person_identity_anchors == expected
+
+
 def test_namesake_does_not_expand_x_targets():
     bundle = schema.RetrievalBundle()
     bundle.items_by_source['x'] = [

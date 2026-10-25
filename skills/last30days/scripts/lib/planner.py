@@ -163,13 +163,8 @@ SOURCE_CAPABILITIES = {
 }
 
 
-def _person_identity_anchors(raw: dict) -> list[str]:
-    anchors = raw.get("person_identity_anchors", [])
-    if not isinstance(anchors, list) or not all(
-        isinstance(anchor, str) and re.search(r"\w", anchor) for anchor in anchors
-    ):
-        raise ValueError("person_identity_anchors must be an array of non-empty strings")
-    return [anchor.strip() for anchor in anchors]
+def _is_identity_anchor(anchor: object) -> bool:
+    return isinstance(anchor, str) and re.search(r"\w", anchor) is not None
 
 
 def validate_external_plan(raw: dict) -> None:
@@ -187,7 +182,9 @@ def validate_external_plan(raw: dict) -> None:
         if not isinstance(raw[field], str) or not raw[field].strip():
             raise ValueError(f"field '{field}' must be a non-empty string")
 
-    _person_identity_anchors(raw)
+    anchors = raw.get("person_identity_anchors", [])
+    if not isinstance(anchors, list) or not all(_is_identity_anchor(a) for a in anchors):
+        raise ValueError("person_identity_anchors must be an array of non-empty strings")
 
     source_weights = raw.get("source_weights")
     if source_weights is not None and not isinstance(source_weights, dict):
@@ -579,6 +576,11 @@ def _sanitize_plan(
     if cluster_mode not in ALLOWED_CLUSTER_MODES:
         cluster_mode = _default_cluster_mode(intent)
 
+    # --plan input was already validated strictly; a malformed field from the
+    # internal LLM planner degrades to unscoped instead of discarding its plan.
+    anchors = raw.get("person_identity_anchors")
+    if not isinstance(anchors, list):
+        anchors = []
     return schema.QueryPlan(
         intent=intent,
         freshness_mode=freshness_mode,
@@ -596,7 +598,7 @@ def _sanitize_plan(
         ),
         source_weights=source_weights,
         notes=[str(note).strip() for note in raw.get("notes") or [] if str(note).strip()],
-        person_identity_anchors=_person_identity_anchors(raw),
+        person_identity_anchors=[a.strip() for a in anchors if _is_identity_anchor(a)],
     )
 
 
